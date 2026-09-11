@@ -4,6 +4,21 @@
 	<settings pass="offlineServicing"></settings>
 	<settings pass="windowsPE">
 		<component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+			<DynamicUpdate>
+				<WillShowUI>OnError</WillShowUI>
+			</DynamicUpdate>
+			<ImageInstall>
+				<OSImage>
+					<Compact>true</Compact>
+					<WillShowUI>OnError</WillShowUI>
+					<InstallFrom>
+						<MetaData wcm:action="add">
+							<Key>/IMAGE/INDEX</Key>
+							<Value>1</Value>
+						</MetaData>
+					</InstallFrom>
+				</OSImage>
+			</ImageInstall>
 			<UserData>
 				<ProductKey>
 					<Key>00000-00000-00000-00000-00000</Key>

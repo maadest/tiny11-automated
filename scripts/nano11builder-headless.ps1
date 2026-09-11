@@ -1261,7 +1261,7 @@ function Process-BootImage {
     reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" 2>&1 | Out-Null
     reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" 2>&1 | Out-Null
 
-    Write-Log "Applying system requirement bypasses to boot image..."
+    Write-Log "Applying system requirement bypasses and WinRE suppression to boot image..."
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV2' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
@@ -1271,8 +1271,19 @@ function Process-BootImage {
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassSecureBootCheck' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassStorageCheck' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassTPMCheck' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'DisableRecovery' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\MoSetup' 'AllowUpgradesWithUnsupportedTPMOrCPU' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\Setup\MoSetup' 'SkipInstallingWinRE' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\WinRE' 'WinREEnabled' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\BitLocker' 'PreventDeviceEncryption' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Setup\Recovery' 'DisableRecovery' 'REG_DWORD' '1'
+
+    # If winre.wim was removed from the OS image, patch ReAgent.xml in boot.wim as well
+    # so SetupHost does not attempt to stage SafeOS from Install.esd during WinPE setup (bypasses error 0x80070003 at 11%)
+    if (-not $PreserveWinRE) {
+        Write-Log "Patching ReAgent.xml in boot.wim to suppress WinRE SafeOS extraction..."
+        Patch-ReAgentXml
+    }
 
     # Unload registry
     reg unload HKLM\zNTUSER 2>&1 | Out-Null

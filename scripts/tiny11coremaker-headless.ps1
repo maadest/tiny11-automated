@@ -502,17 +502,57 @@ function Remove-EdgeAndOneDrive {
 }
 
 function Remove-WinRE {
-    Write-Log "Removing Windows Recovery Environment..."
+    Write-Log "Removing Windows Recovery Environment (winre.wim)..."
 
     $recoveryDir = "$scratchDir\Windows\System32\Recovery"
-    & takeown /f $recoveryDir /r /a | Out-Null
-    & icacls $recoveryDir /grant 'Administrators:F' /T /C | Out-Null
+    & takeown /f $recoveryDir /r /a 2>&1 | Out-Null
+    & icacls $recoveryDir /grant "$($adminGroup.Value):(F)" /T /C 2>&1 | Out-Null
 
     $winRE = "$recoveryDir\winre.wim"
     if (Test-Path $winRE) {
-        Remove-Item -Path $winRE -Recurse -Force
-        New-Item -Path $winRE -ItemType File -Force | Out-Null
-        Write-Log "WinRE removed and replaced with empty file"
+        Remove-Item -Path $winRE -Force -ErrorAction SilentlyContinue
+        Write-Log "winre.wim deleted. Windows Setup will skip WinRE config gracefully."
+    } else {
+        Write-Log "winre.wim not found — already absent, nothing to do." "WARN"
+    }
+
+    Write-Log "WinRE removed"
+}
+
+function Patch-ReAgentXml {
+    Write-Log "Patching ReAgent.xml to clear stale WinRE staging state..."
+
+    $reagentXmlPath = "$scratchDir\Windows\System32\Recovery\ReAgent.xml"
+
+    $cleanXml = @'
+<?xml version='1.0' encoding='utf-8'?>
+<WindowsRE version="2.0">
+  <WinreBCD id="{00000000-0000-0000-0000-000000000000}"/>
+  <WinreLocation path="" id="0" offset="0" guid="{00000000-0000-0000-0000-000000000000}"/>
+  <ImageLocation path="" id="0" offset="0" guid="{00000000-0000-0000-0000-000000000000}"/>
+  <PBRImageLocation path="" id="0" offset="0" guid="{00000000-0000-0000-0000-000000000000}" index="0"/>
+  <PBRCustomImageLocation path="" id="0" offset="0" guid="{00000000-0000-0000-0000-000000000000}" index="0"/>
+  <InstallState state="0"/>
+  <OsInstallAvailable state="0"/>
+  <CustomImageAvailable state="0"/>
+  <IsAutoRepairOn state="0"/>
+  <WinREStaged state="0"/>
+  <OperationParam path=""/>
+  <OemTool path=""/>
+</WindowsRE>
+'@
+
+    try {
+        $recoveryDir = "$scratchDir\Windows\System32\Recovery"
+        if (-not (Test-Path $recoveryDir)) {
+            New-Item -ItemType Directory -Force -Path $recoveryDir | Out-Null
+        }
+
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($reagentXmlPath, $cleanXml.TrimStart(), $utf8NoBom)
+        Write-Log "ReAgent.xml patched: all WinRE state/staging fields zeroed."
+    } catch {
+        Write-Log "Failed to patch ReAgent.xml: $_" "WARN"
     }
 }
 
@@ -866,6 +906,10 @@ function Apply-RegistryTweaks {
         }
     }
 
+    # Disable WinRE — prevents reagentc from trying to reconfigure the recovery
+    # environment on first boot after winre.wim has been removed.
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\WinRE' 'WinREEnabled' 'REG_DWORD' '0'
+
     # Hide settings pages
     Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer' 'SettingsPageVisibility' 'REG_SZ' 'hide:virus;windowsupdate'
 
@@ -1066,7 +1110,7 @@ function Process-BootImage {
     reg load HKLM\zSOFTWARE "$scratchDir\Windows\System32\config\SOFTWARE" | Out-Null
     reg load HKLM\zSYSTEM "$scratchDir\Windows\System32\config\SYSTEM" | Out-Null
 
-    Write-Log "Applying system requirement bypasses to boot image..."
+    Write-Log "Applying system requirement bypasses and WinRE suppression to boot image..."
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zDEFAULT\Control Panel\UnsupportedHardwareNotificationCache' 'SV2' 'REG_DWORD' '0'
     Set-RegistryValue 'HKLM\zNTUSER\Control Panel\UnsupportedHardwareNotificationCache' 'SV1' 'REG_DWORD' '0'
@@ -1076,8 +1120,20 @@ function Process-BootImage {
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassSecureBootCheck' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassStorageCheck' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'BypassTPMCheck' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\Setup\LabConfig' 'DisableRecovery' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup\MoSetup' 'AllowUpgradesWithUnsupportedTPMOrCPU' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\Setup\MoSetup' 'SkipInstallingWinRE' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\WinRE' 'WinREEnabled' 'REG_DWORD' '0'
+    Set-RegistryValue 'HKLM\zSYSTEM\ControlSet001\Control\BitLocker' 'PreventDeviceEncryption' 'REG_DWORD' '1'
+    Set-RegistryValue 'HKLM\zSOFTWARE\Microsoft\Windows\CurrentVersion\Setup\Recovery' 'DisableRecovery' 'REG_DWORD' '1'
     Set-RegistryValue 'HKLM\zSYSTEM\Setup' 'CmdLine' 'REG_SZ' 'X:\sources\setup.exe'
+
+    # If winre.wim was removed from the OS image, patch ReAgent.xml in boot.wim as well
+    # so SetupHost does not attempt to stage SafeOS from Install.esd during WinPE setup (bypasses error 0x80070003 at 11%)
+    if (-not $PreserveWinRE) {
+        Write-Log "Patching ReAgent.xml in boot.wim to suppress WinRE SafeOS extraction..."
+        Patch-ReAgentXml
+    }
 
     # Unload registry
     reg unload HKLM\zCOMPONENTS | Out-Null
